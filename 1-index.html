@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<!--
+  MindAR image-tracking experiment (standalone test page, NOT part of Brill-AR).
+  Purpose: compare open-source MindAR tracking vs the existing 8th Wall engine
+  on the same artwork + video already public in github.com/Adibrill1/Brill-AR.
+
+  Engine: MindAR v1.2.5, MIT license, (c) hiukim 2020
+  https://github.com/hiukim/mind-ar-js
+  A-Frame v1.4.2, MIT license.
+
+  No 8th Wall code, keys or services are used on this page.
+  Everything (engine, target data, video) is served from this static site;
+  the camera feed is processed locally in the viewer's browser.
+
+  Startup design: the video is a plain DOM element (NOT an a-asset) so the
+  AR engine asks for the camera immediately on renderstart instead of waiting
+  for a multi-MB video download first. The video loads in parallel and is
+  attached to the tracking plane directly by the script below.
+  It is parked off-screen (NOT display:none): iOS Safari does not feed frames
+  from a display:none video into a WebGL texture.
+-->
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>ניסוי MindAR</title>
+  <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+  <style>
+    html, body {
+      margin: 0; padding: 0; height: 100%; overflow: hidden;
+      background: #000;
+    }
+    /* embedded a-scene sizes itself to its container; pin the container to the viewport */
+    a-scene {
+      position: fixed !important; inset: 0;
+      width: 100% !important; height: 100% !important;
+    }
+    .ui-note {
+      position: fixed; z-index: 20; left: 50%; transform: translateX(-50%);
+      font-family: -apple-system, "Segoe UI", Arial, sans-serif;
+      background: rgba(0,0,0,0.72); color: #fff; border-radius: 14px;
+      padding: 12px 18px; font-size: 16px; text-align: center; line-height: 1.6;
+    }
+    #hint { top: calc(env(safe-area-inset-top, 0px) + 10px); width: min(88vw, 480px); box-sizing: border-box; }
+    #scanState {
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
+      padding: 8px 16px; font-size: 15px; white-space: nowrap;
+    }
+    #soundBtn {
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
+      border: 0; cursor: pointer; font-size: 16px; padding: 12px 22px;
+      background: #ffd54f; color: #111; font-weight: 700; white-space: nowrap;
+    }
+    #status {
+      position: fixed; inset: 0; z-index: 30;
+      display: flex; align-items: center; justify-content: center;
+      background: #111; font-family: -apple-system, "Segoe UI", Arial, sans-serif;
+    }
+    #statusCard {
+      width: min(86vw, 420px); background: #1e1e1e; color: #fff;
+      border-radius: 16px; padding: 28px 22px; text-align: center;
+      font-size: 17px; line-height: 1.7; box-sizing: border-box;
+    }
+    #statusCard .spinner {
+      width: 42px; height: 42px; margin: 0 auto 16px;
+      border: 5px solid rgba(255,255,255,0.25); border-top-color: #ffd54f;
+      border-radius: 50%; animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #statusCard .errIcon { font-size: 40px; margin-bottom: 12px; }
+    #retryBtn {
+      margin-top: 18px; border: 0; cursor: pointer; font-size: 17px;
+      padding: 12px 28px; border-radius: 12px; background: #ffd54f; color: #111; font-weight: 700;
+    }
+    #statusCard .small { font-size: 14px; color: #bbb; margin-top: 14px; }
+    #inAppNote {
+      display: none; margin-top: 14px; padding: 10px 12px; border-radius: 10px;
+      background: rgba(255, 213, 79, 0.15); color: #ffd54f; font-size: 14px; line-height: 1.6;
+    }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <div id="hint" class="ui-note" hidden>
+    ניסוי MindAR (מנוע פתוח) - לא Brill-AR.<br />
+    כווני את המצלמה לכרטיס הפיזי.
+  </div>
+  <div id="scanState" class="ui-note" hidden>מחפשת את הכרטיס…</div>
+  <button id="soundBtn" class="ui-note" hidden>🔊 הקישי להפעלת צליל</button>
+
+  <div id="status">
+    <div id="statusCard">
+      <div id="loadingBox">
+        <div class="spinner"></div>
+        <div id="loadingText">טוענת את מנוע ה־AR…</div>
+        <div id="loadingSub" class="small">זה יכול לקחת כמה שניות.</div>
+        <div id="inAppNote">
+          שימי לב: נראה שהקישור נפתח בתוך אפליקציה אחרת, ושם המצלמה עלולה לא לעבוד.
+          אם זה נתקע - חזרי לצ׳אט ופתחי את הקישור בספארי.
+        </div>
+      </div>
+      <div id="errorBox" hidden>
+        <div class="errIcon">📷</div>
+        <div id="errorText">לא הצלחתי לפתוח את המצלמה.</div>
+        <div class="small">
+          ודאי שפתחת את הקישור <b>בספארי</b> (לא מתוך וואטסאפ),
+          ושאישרת גישה למצלמה. אם דחית, אפשר לאפס בהגדרות המכשיר:
+          הגדרות ← Safari ← מצלמה.
+        </div>
+        <button id="retryBtn">נסי שוב</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Plain DOM video: loads in parallel, never blocks the AR engine's camera request.
+       Parked off-screen, NOT display:none (iOS Safari won't texture a display:none video). -->
+  <video id="vid" src="./5-art-video.mp4" loop muted playsinline webkit-playsinline
+         preload="auto"
+         style="position:absolute; left:-9999px; top:-9999px; width:2px; height:2px; opacity:0.01;"></video>
+
+  <a-scene
+    mindar-image="imageTargetSrc: ./targets.mind; uiLoading: no; uiScanning: no; uiError: no; filterMinCF: 0.001; filterBeta: 0.01; missTolerance: 5; warmupTolerance: 5"
+    vr-mode-ui="enabled: false"
+    device-orientation-permission-ui="enabled: false"
+    renderer="antialias: true; alpha: true; precision: mediump"
+    embedded>
+    <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+
+    <a-entity mindar-image-target="targetIndex: 0">
+      <!-- Video fit to target height, keeping its own 9:16 aspect (target is landscape card) -->
+      <a-plane id="vidPlane" position="0 0 0" width="0.356" height="0.6328"
+               material="shader: flat"></a-plane>
+    </a-entity>
+  </a-scene>
+
+  <script>
+    (function () {
+      var scene = document.querySelector('a-scene');
+      var vid = document.getElementById('vid');
+      var soundBtn = document.getElementById('soundBtn');
+      var hint = document.getElementById('hint');
+      var scanState = document.getElementById('scanState');
+      var status = document.getElementById('status');
+      var loadingBox = document.getElementById('loadingBox');
+      var errorBox = document.getElementById('errorBox');
+      var loadingText = document.getElementById('loadingText');
+      var loadingSub = document.getElementById('loadingSub');
+      var retryBtn = document.getElementById('retryBtn');
+      var target = document.querySelector('[mindar-image-target]');
+      var ready = false;
+      var cameraLive = false;
+      var stage = 0; // 0=scripts, 1=camera requested, 2=camera granted, preparing
+
+      // In-app browser notice (WhatsApp, Facebook, Instagram, Telegram webviews)
+      if (/WhatsApp|FBAN|FBAV|Instagram|Telegram/i.test(navigator.userAgent)) {
+        document.getElementById('inAppNote').style.display = 'block';
+      }
+
+      // Attach the video to the tracking plane directly (element, not selector),
+      // so it never needs to sit in a-assets.
+      scene.addEventListener('loaded', function () {
+        document.getElementById('vidPlane').setAttribute('material', { shader: 'flat', src: vid });
+      });
+
+      // Stage 1: the engine is about to ask for the camera (renderstart = no asset wait).
+      scene.addEventListener('renderstart', function () {
+        if (ready || stage > 1) return;
+        stage = 1;
+        loadingText.textContent = 'מבקשת גישה למצלמה…';
+        loadingSub.textContent = 'אם קופץ חלון אישור - אשרי גישה למצלמה.';
+      });
+
+      // Stage 2: camera stream exists, engine now prepares image recognition.
+      var camPoll = setInterval(function () {
+        var sys = scene.systems['mindar-image-system'];
+        if (sys && sys.video && sys.video.srcObject) {
+          cameraLive = true;
+          clearInterval(camPoll);
+          if (!ready) {
+            stage = 2;
+            loadingText.textContent = 'המצלמה פועלת, מכינה את זיהוי התמונה…';
+            loadingSub.textContent = 'עוד כמה שניות.';
+          }
+        }
+        if (ready) clearInterval(camPoll);
+      }, 250);
+
+      function showError(msg) {
+        if (ready) return;
+        if (msg) document.getElementById('errorText').textContent = msg;
+        loadingBox.hidden = true;
+        errorBox.hidden = false;
+        status.hidden = false;
+      }
+
+      scene.addEventListener('arReady', function () {
+        ready = true;
+        status.hidden = true;
+        hint.hidden = false;
+        scanState.hidden = false;
+      });
+      scene.addEventListener('arError', function () {
+        showError();
+      });
+
+      // Watchdogs: never leave a bare spinner without an explanation.
+      // 15s without even a camera stream = the camera prompt never resolved.
+      setTimeout(function () {
+        if (!ready && !cameraLive) {
+          showError('המתנה ארוכה למצלמה. אם לא קפץ חלון אישור - ייתכן שהדפדפן הזה חוסם מצלמה.');
+        }
+      }, 15000);
+      // 45s with a live camera but no ready engine = preparation took too long.
+      setTimeout(function () {
+        if (!ready) showError('ההכנה לוקחת יותר מדי זמן.');
+      }, 45000);
+
+      retryBtn.addEventListener('click', function () {
+        errorBox.hidden = true;
+        loadingBox.hidden = false;
+        loadingText.textContent = 'מבקשת גישה למצלמה…';
+        loadingSub.textContent = 'אם קופץ חלון אישור - אשרי גישה למצלמה.';
+        var sys = scene.systems['mindar-image-system'];
+        if (sys && sys.start) sys.start();
+      });
+
+      function tryPlay() {
+        var p = vid.play();
+        if (p && p.catch) p.catch(function () {});
+      }
+
+      // iOS: muted + playsinline plays without a gesture. Offer one-tap unmute.
+      target.addEventListener('targetFound', function () {
+        tryPlay();
+        scanState.hidden = true;
+        if (vid.muted) soundBtn.hidden = false;
+      });
+      target.addEventListener('targetLost', function () {
+        scanState.textContent = 'מחפשת את הכרטיס…';
+        scanState.hidden = false;
+      });
+
+      soundBtn.addEventListener('click', function () {
+        vid.muted = false;
+        vid.volume = 1;
+        tryPlay();
+        soundBtn.hidden = true;
+      });
+    })();
+  </script>
+</body>
+</html>
