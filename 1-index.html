@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<!--
+  MindAR image-tracking experiment (standalone test page, NOT part of Brill-AR).
+  Purpose: compare open-source MindAR tracking vs the existing 8th Wall engine
+  on the same artwork + video already public in github.com/Adibrill1/Brill-AR
+  (studio/assets/demo: artwork.jpg + art-video.mp4).
+
+  Engine: MindAR v1.2.5, MIT license, (c) hiukim 2020
+  https://github.com/hiukim/mind-ar-js
+  A-Frame v1.4.2, MIT license.
+
+  No 8th Wall code, keys or services are used on this page.
+  Everything (engine, target data, video) is served from this static site;
+  the camera feed is processed locally in the viewer's browser.
+-->
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>ניסוי MindAR - סטאר ברסט</title>
+  <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    .ui-note {
+      position: fixed; z-index: 20; left: 50%; transform: translateX(-50%);
+      font-family: -apple-system, "Segoe UI", Arial, sans-serif;
+      background: rgba(0,0,0,0.65); color: #fff; border-radius: 12px;
+      padding: 8px 14px; font-size: 14px; text-align: center;
+    }
+    #hint { top: calc(env(safe-area-inset-top, 0px) + 10px); max-width: 86vw; line-height: 1.5; }
+    #hint a { color: #ffd54f; }
+    #soundBtn {
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
+      border: 0; cursor: pointer; font-size: 17px; padding: 12px 22px;
+      background: #ffd54f; color: #111; font-weight: 600;
+    }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <div id="hint" class="ui-note">
+    ניסוי MindAR (מנוע פתוח) - לא Brill-AR.
+    כווני את המצלמה לתמונת היעד:
+    <a href="./target-artwork.jpg" target="_blank" rel="noopener">פתיחת התמונה במסך אחר</a>
+  </div>
+  <button id="soundBtn" class="ui-note" hidden>🔊 הקישי להפעלת צליל</button>
+
+  <a-scene
+    mindar-image="imageTargetSrc: ./targets.mind; filterMinCF: 0.001; filterBeta: 0.01; missTolerance: 5; warmupTolerance: 5"
+    vr-mode-ui="enabled: false"
+    device-orientation-permission-ui="enabled: false"
+    renderer="antialias: true; alpha: true; precision: mediump"
+    embedded>
+    <a-assets>
+      <video id="vid" src="./art-video.mp4" loop muted playsinline webkit-playsinline
+             crossorigin="anonymous" preload="auto"></video>
+    </a-assets>
+
+    <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+
+    <a-entity mindar-image-target="targetIndex: 0">
+      <!-- Video letterboxed to its own 9:16 aspect over the 3:4 artwork -->
+      <a-plane src="#vid" position="0 0 0" width="0.75" height="1.3333"
+               material="shader: flat"></a-plane>
+    </a-entity>
+  </a-scene>
+
+  <script>
+    (function () {
+      var vid = document.getElementById('vid');
+      var soundBtn = document.getElementById('soundBtn');
+      var target = document.querySelector('[mindar-image-target]');
+
+      function tryPlay() {
+        var p = vid.play();
+        if (p && p.catch) p.catch(function () {});
+      }
+
+      // iOS: muted + playsinline autoplays after the camera-start gesture.
+      // Offer a one-tap unmute as soon as the target is found.
+      target.addEventListener('targetFound', function () {
+        tryPlay();
+        if (vid.muted) soundBtn.hidden = false;
+      });
+      target.addEventListener('targetLost', function () { /* keep last frame; MindAR keeps rendering */ });
+
+      soundBtn.addEventListener('click', function () {
+        vid.muted = false;
+        vid.volume = 1;
+        tryPlay();
+        soundBtn.hidden = true;
+      });
+    })();
+  </script>
+</body>
+</html>
