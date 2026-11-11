@@ -2,8 +2,7 @@
 <!--
   MindAR image-tracking experiment (standalone test page, NOT part of Brill-AR).
   Purpose: compare open-source MindAR tracking vs the existing 8th Wall engine
-  on the same artwork + video already public in github.com/Adibrill1/Brill-AR
-  (studio/assets/demo: artwork.jpg + art-video.mp4).
+  on the same artwork + video already public in github.com/Adibrill1/Brill-AR.
 
   Engine: MindAR v1.2.5, MIT license, (c) hiukim 2020
   https://github.com/hiukim/mind-ar-js
@@ -12,12 +11,17 @@
   No 8th Wall code, keys or services are used on this page.
   Everything (engine, target data, video) is served from this static site;
   the camera feed is processed locally in the viewer's browser.
+
+  Startup design: the video is a plain DOM element (NOT an a-asset) so the
+  AR engine asks for the camera immediately on renderstart instead of waiting
+  for a multi-MB video download first. The video loads in parallel and is
+  attached to the tracking plane directly by the script below.
 -->
 <html lang="he" dir="rtl">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>ניסוי MindAR - סטאר ברסט</title>
+  <title>ניסוי MindAR</title>
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
   <style>
@@ -57,14 +61,17 @@
       padding: 12px 28px; border-radius: 12px; background: #ffd54f; color: #111; font-weight: 700;
     }
     #statusCard .small { font-size: 14px; color: #bbb; margin-top: 14px; }
+    #inAppNote {
+      display: none; margin-top: 14px; padding: 10px 12px; border-radius: 10px;
+      background: rgba(255, 213, 79, 0.15); color: #ffd54f; font-size: 14px; line-height: 1.6;
+    }
     [hidden] { display: none !important; }
   </style>
 </head>
 <body>
   <div id="hint" class="ui-note" hidden>
     ניסוי MindAR (מנוע פתוח) - לא Brill-AR.<br />
-    כווני את המצלמה לתמונת היעד:
-    <a href="./target-artwork.jpg" target="_blank" rel="noopener">פתיחת התמונה במסך אחר</a>
+    כווני את המצלמה לכרטיס הפיזי.
   </div>
   <button id="soundBtn" class="ui-note" hidden>🔊 הקישי להפעלת צליל</button>
 
@@ -72,8 +79,12 @@
     <div id="statusCard">
       <div id="loadingBox">
         <div class="spinner"></div>
-        <div>טוענת את מנוע ה־AR ומבקשת גישה למצלמה…</div>
-        <div class="small">אם נשאלת, אשרי גישה למצלמה. זה יכול לקחת כמה שניות.</div>
+        <div id="loadingText">טוענת את מנוע ה־AR…</div>
+        <div id="loadingSub" class="small">זה יכול לקחת כמה שניות.</div>
+        <div id="inAppNote">
+          שימי לב: נראה שהקישור נפתח בתוך אפליקציה אחרת, ושם המצלמה עלולה לא לעבוד.
+          אם זה נתקע - חזרי לצ׳אט ופתחי את הקישור בספארי.
+        </div>
       </div>
       <div id="errorBox" hidden>
         <div class="errIcon">📷</div>
@@ -88,22 +99,21 @@
     </div>
   </div>
 
+  <!-- Plain DOM video: loads in parallel, never blocks the AR engine's camera request -->
+  <video id="vid" src="./5-art-video.mp4" loop muted playsinline webkit-playsinline
+         preload="auto" style="display:none"></video>
+
   <a-scene
     mindar-image="imageTargetSrc: ./targets.mind; uiLoading: no; uiScanning: no; uiError: no; filterMinCF: 0.001; filterBeta: 0.01; missTolerance: 5; warmupTolerance: 5"
     vr-mode-ui="enabled: false"
     device-orientation-permission-ui="enabled: false"
     renderer="antialias: true; alpha: true; precision: mediump"
     embedded>
-    <a-assets timeout="15000">
-      <video id="vid" src="./5-art-video.mp4" loop muted playsinline webkit-playsinline
-             crossorigin="anonymous" preload="auto"></video>
-    </a-assets>
-
     <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
     <a-entity mindar-image-target="targetIndex: 0">
-      <!-- Video fit to target height, keeping its own 9:16 aspect (target is 2048x1296 landscape) -->
-      <a-plane src="#vid" position="0 0 0" width="0.356" height="0.6328"
+      <!-- Video fit to target height, keeping its own 9:16 aspect (target is landscape card) -->
+      <a-plane id="vidPlane" position="0 0 0" width="0.356" height="0.6328"
                material="shader: flat"></a-plane>
     </a-entity>
   </a-scene>
@@ -117,14 +127,47 @@
       var status = document.getElementById('status');
       var loadingBox = document.getElementById('loadingBox');
       var errorBox = document.getElementById('errorBox');
+      var loadingText = document.getElementById('loadingText');
+      var loadingSub = document.getElementById('loadingSub');
       var retryBtn = document.getElementById('retryBtn');
       var target = document.querySelector('[mindar-image-target]');
       var ready = false;
+      var cameraLive = false;
+      var stage = 0; // 0=scripts, 1=camera requested, 2=camera granted, preparing
 
-      function tryPlay() {
-        var p = vid.play();
-        if (p && p.catch) p.catch(function () {});
+      // In-app browser notice (WhatsApp, Facebook, Instagram, Telegram webviews)
+      if (/WhatsApp|FBAN|FBAV|Instagram|Telegram/i.test(navigator.userAgent)) {
+        document.getElementById('inAppNote').style.display = 'block';
       }
+
+      // Attach the video to the tracking plane directly (element, not selector),
+      // so it never needs to sit in a-assets.
+      scene.addEventListener('loaded', function () {
+        document.getElementById('vidPlane').setAttribute('material', { shader: 'flat', src: vid });
+      });
+
+      // Stage 1: the engine is about to ask for the camera (renderstart = no asset wait).
+      scene.addEventListener('renderstart', function () {
+        if (ready || stage > 1) return;
+        stage = 1;
+        loadingText.textContent = 'מבקשת גישה למצלמה…';
+        loadingSub.textContent = 'אם קופץ חלון אישור - אשרי גישה למצלמה.';
+      });
+
+      // Stage 2: camera stream exists, engine now prepares image recognition.
+      var camPoll = setInterval(function () {
+        var sys = scene.systems['mindar-image-system'];
+        if (sys && sys.video && sys.video.srcObject) {
+          cameraLive = true;
+          clearInterval(camPoll);
+          if (!ready) {
+            stage = 2;
+            loadingText.textContent = 'המצלמה פועלת, מכינה את זיהוי התמונה…';
+            loadingSub.textContent = 'עוד כמה שניות.';
+          }
+        }
+        if (ready) clearInterval(camPoll);
+      }, 250);
 
       function showError(msg) {
         if (ready) return;
@@ -139,24 +182,37 @@
         status.hidden = true;
         hint.hidden = false;
       });
-      scene.addEventListener('arError', function (e) {
+      scene.addEventListener('arError', function () {
         showError();
       });
 
-      // Watchdog: never leave a bare spinner - if nothing happened in 45s, say so.
+      // Watchdogs: never leave a bare spinner without an explanation.
+      // 15s without even a camera stream = the camera prompt never resolved.
       setTimeout(function () {
-        if (!ready) showError('הטעינה לוקחת יותר מדי זמן.');
+        if (!ready && !cameraLive) {
+          showError('המתנה ארוכה למצלמה. אם לא קפץ חלון אישור - ייתכן שהדפדפן הזה חוסם מצלמה.');
+        }
+      }, 15000);
+      // 45s with a live camera but no ready engine = preparation took too long.
+      setTimeout(function () {
+        if (!ready) showError('ההכנה לוקחת יותר מדי זמן.');
       }, 45000);
 
       retryBtn.addEventListener('click', function () {
         errorBox.hidden = true;
         loadingBox.hidden = false;
+        loadingText.textContent = 'מבקשת גישה למצלמה…';
+        loadingSub.textContent = 'אם קופץ חלון אישור - אשרי גישה למצלמה.';
         var sys = scene.systems['mindar-image-system'];
         if (sys && sys.start) sys.start();
       });
 
-      // iOS: muted + playsinline autoplays after the camera-start gesture.
-      // Offer a one-tap unmute as soon as the target is found.
+      function tryPlay() {
+        var p = vid.play();
+        if (p && p.catch) p.catch(function () {});
+      }
+
+      // iOS: muted + playsinline plays without a gesture. Offer one-tap unmute.
       target.addEventListener('targetFound', function () {
         tryPlay();
         if (vid.muted) soundBtn.hidden = false;
