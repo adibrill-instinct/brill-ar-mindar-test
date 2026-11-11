@@ -25,34 +25,76 @@
     .ui-note {
       position: fixed; z-index: 20; left: 50%; transform: translateX(-50%);
       font-family: -apple-system, "Segoe UI", Arial, sans-serif;
-      background: rgba(0,0,0,0.65); color: #fff; border-radius: 12px;
-      padding: 8px 14px; font-size: 14px; text-align: center;
+      background: rgba(0,0,0,0.72); color: #fff; border-radius: 14px;
+      padding: 12px 18px; font-size: 16px; text-align: center; line-height: 1.6;
     }
-    #hint { top: calc(env(safe-area-inset-top, 0px) + 10px); max-width: 86vw; line-height: 1.5; }
-    #hint a { color: #ffd54f; }
+    #hint { top: calc(env(safe-area-inset-top, 0px) + 10px); width: min(88vw, 480px); box-sizing: border-box; }
+    #hint a { color: #ffd54f; font-weight: 600; }
     #soundBtn {
       bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
-      border: 0; cursor: pointer; font-size: 17px; padding: 12px 22px;
-      background: #ffd54f; color: #111; font-weight: 600;
+      border: 0; cursor: pointer; font-size: 18px; padding: 14px 26px;
+      background: #ffd54f; color: #111; font-weight: 700;
     }
+    #status {
+      position: fixed; inset: 0; z-index: 30;
+      display: flex; align-items: center; justify-content: center;
+      background: #111; font-family: -apple-system, "Segoe UI", Arial, sans-serif;
+    }
+    #statusCard {
+      width: min(86vw, 420px); background: #1e1e1e; color: #fff;
+      border-radius: 16px; padding: 28px 22px; text-align: center;
+      font-size: 17px; line-height: 1.7; box-sizing: border-box;
+    }
+    #statusCard .spinner {
+      width: 42px; height: 42px; margin: 0 auto 16px;
+      border: 5px solid rgba(255,255,255,0.25); border-top-color: #ffd54f;
+      border-radius: 50%; animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #statusCard .errIcon { font-size: 40px; margin-bottom: 12px; }
+    #retryBtn {
+      margin-top: 18px; border: 0; cursor: pointer; font-size: 17px;
+      padding: 12px 28px; border-radius: 12px; background: #ffd54f; color: #111; font-weight: 700;
+    }
+    #statusCard .small { font-size: 14px; color: #bbb; margin-top: 14px; }
     [hidden] { display: none !important; }
   </style>
 </head>
 <body>
-  <div id="hint" class="ui-note">
-    ניסוי MindAR (מנוע פתוח) - לא Brill-AR.
+  <div id="hint" class="ui-note" hidden>
+    ניסוי MindAR (מנוע פתוח) - לא Brill-AR.<br />
     כווני את המצלמה לתמונת היעד:
     <a href="./target-artwork.jpg" target="_blank" rel="noopener">פתיחת התמונה במסך אחר</a>
   </div>
   <button id="soundBtn" class="ui-note" hidden>🔊 הקישי להפעלת צליל</button>
 
+  <div id="status">
+    <div id="statusCard">
+      <div id="loadingBox">
+        <div class="spinner"></div>
+        <div>טוענת את מנוע ה־AR ומבקשת גישה למצלמה…</div>
+        <div class="small">אם נשאלת, אשרי גישה למצלמה. זה יכול לקחת כמה שניות.</div>
+      </div>
+      <div id="errorBox" hidden>
+        <div class="errIcon">📷</div>
+        <div id="errorText">לא הצלחתי לפתוח את המצלמה.</div>
+        <div class="small">
+          ודאי שפתחת את הקישור <b>בספארי</b> (לא מתוך וואטסאפ),
+          ושאישרת גישה למצלמה. אם דחית, אפשר לאפס בהגדרות המכשיר:
+          הגדרות ← Safari ← מצלמה.
+        </div>
+        <button id="retryBtn">נסי שוב</button>
+      </div>
+    </div>
+  </div>
+
   <a-scene
-    mindar-image="imageTargetSrc: ./targets.mind; filterMinCF: 0.001; filterBeta: 0.01; missTolerance: 5; warmupTolerance: 5"
+    mindar-image="imageTargetSrc: ./targets.mind; uiLoading: no; uiScanning: no; uiError: no; filterMinCF: 0.001; filterBeta: 0.01; missTolerance: 5; warmupTolerance: 5"
     vr-mode-ui="enabled: false"
     device-orientation-permission-ui="enabled: false"
     renderer="antialias: true; alpha: true; precision: mediump"
     embedded>
-    <a-assets>
+    <a-assets timeout="15000">
       <video id="vid" src="./5-art-video.mp4" loop muted playsinline webkit-playsinline
              crossorigin="anonymous" preload="auto"></video>
     </a-assets>
@@ -68,14 +110,50 @@
 
   <script>
     (function () {
+      var scene = document.querySelector('a-scene');
       var vid = document.getElementById('vid');
       var soundBtn = document.getElementById('soundBtn');
+      var hint = document.getElementById('hint');
+      var status = document.getElementById('status');
+      var loadingBox = document.getElementById('loadingBox');
+      var errorBox = document.getElementById('errorBox');
+      var retryBtn = document.getElementById('retryBtn');
       var target = document.querySelector('[mindar-image-target]');
+      var ready = false;
 
       function tryPlay() {
         var p = vid.play();
         if (p && p.catch) p.catch(function () {});
       }
+
+      function showError(msg) {
+        if (ready) return;
+        if (msg) document.getElementById('errorText').textContent = msg;
+        loadingBox.hidden = true;
+        errorBox.hidden = false;
+        status.hidden = false;
+      }
+
+      scene.addEventListener('arReady', function () {
+        ready = true;
+        status.hidden = true;
+        hint.hidden = false;
+      });
+      scene.addEventListener('arError', function (e) {
+        showError();
+      });
+
+      // Watchdog: never leave a bare spinner - if nothing happened in 45s, say so.
+      setTimeout(function () {
+        if (!ready) showError('הטעינה לוקחת יותר מדי זמן.');
+      }, 45000);
+
+      retryBtn.addEventListener('click', function () {
+        errorBox.hidden = true;
+        loadingBox.hidden = false;
+        var sys = scene.systems['mindar-image-system'];
+        if (sys && sys.start) sys.start();
+      });
 
       // iOS: muted + playsinline autoplays after the camera-start gesture.
       // Offer a one-tap unmute as soon as the target is found.
@@ -83,7 +161,6 @@
         tryPlay();
         if (vid.muted) soundBtn.hidden = false;
       });
-      target.addEventListener('targetLost', function () { /* keep last frame; MindAR keeps rendering */ });
 
       soundBtn.addEventListener('click', function () {
         vid.muted = false;
