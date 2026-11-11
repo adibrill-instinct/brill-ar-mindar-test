@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<!--
+  TEST ONLY - synthetic camera validation for the MindAR demo (not linked anywhere).
+  Overrides getUserMedia with a canvas stream that shows the target artwork,
+  so the full pipeline (target compile match -> targetFound -> video plane
+  render/play) can be verified in a browser with no physical camera.
+  Same layout CSS and wiring as index.html so sizing is validated too.
+-->
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>MindAR track test</title>
+  <script>
+    // Fake camera: a canvas stream showing the target artwork with slight motion.
+    (function () {
+      var canvasStream = null;
+      var readyPromise = null;
+      function buildStream() {
+        if (readyPromise) return readyPromise;
+        readyPromise = new Promise(function (resolve, reject) {
+          var img = new Image();
+          img.onload = function () {
+            var c = document.createElement('canvas');
+            c.width = 1280; c.height = 720;
+            var ctx = c.getContext('2d');
+            var t0 = performance.now();
+            function draw() {
+              var t = (performance.now() - t0) / 1000;
+              ctx.fillStyle = '#3a3a3a';
+              ctx.fillRect(0, 0, 1280, 720);
+              ctx.save();
+              ctx.translate(640 + 12 * Math.sin(t * 0.4), 360 + 8 * Math.cos(t * 0.3));
+              ctx.rotate(0.02 * Math.sin(t * 0.5));
+              var w = 760;
+              var h = img.height / img.width * w;
+              ctx.drawImage(img, -w / 2, -h / 2, w, h);
+              ctx.restore();
+            }
+            draw();
+            setInterval(draw, 66);
+            canvasStream = c.captureStream(30);
+            resolve(canvasStream);
+          };
+          img.onerror = function () { reject(new Error('artwork load failed')); };
+          img.src = './target-artwork.jpg';
+        });
+        return readyPromise;
+      }
+      navigator.mediaDevices.getUserMedia = function () {
+        return buildStream();
+      };
+    })();
+  </script>
+  <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+  <style>
+    html, body {
+      margin: 0; padding: 0; height: 100%; overflow: hidden;
+      background: #000;
+    }
+    a-scene {
+      position: fixed !important; inset: 0;
+      width: 100% !important; height: 100% !important;
+    }
+    #dbg {
+      position: fixed; z-index: 40; left: 8px; bottom: 8px; right: 8px;
+      font-family: monospace; font-size: 12px; color: #0f0;
+      background: rgba(0,0,0,0.7); padding: 6px 8px; border-radius: 6px;
+      direction: ltr; text-align: left; white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div id="dbg">boot</div>
+
+  <video id="vid" src="./5-art-video.mp4" loop muted playsinline webkit-playsinline
+         preload="auto"
+         style="position:absolute; left:-9999px; top:-9999px; width:2px; height:2px; opacity:0.01;"></video>
+
+  <a-scene
+    mindar-image="imageTargetSrc: ./targets.mind; uiLoading: no; uiScanning: no; uiError: no; filterMinCF: 0.001; filterBeta: 0.01; missTolerance: 5; warmupTolerance: 5"
+    vr-mode-ui="enabled: false"
+    device-orientation-permission-ui="enabled: false"
+    renderer="antialias: true; alpha: true; precision: mediump"
+    embedded>
+    <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+
+    <a-entity mindar-image-target="targetIndex: 0">
+      <a-plane id="vidPlane" position="0 0 0" width="0.356" height="0.6328"
+               material="shader: flat"></a-plane>
+    </a-entity>
+  </a-scene>
+
+  <script>
+    (function () {
+      var scene = document.querySelector('a-scene');
+      var vid = document.getElementById('vid');
+      var target = document.querySelector('[mindar-image-target]');
+      var dbg = document.getElementById('dbg');
+      window.__t = { events: [], state: null, transitions: [] };
+      function log(e) {
+        window.__t.events.push(e + '@' + Math.round(performance.now() / 100) / 10);
+        dbg.textContent = window.__t.events.join(' | ');
+      }
+      scene.addEventListener('loaded', function () {
+        document.getElementById('vidPlane').setAttribute('material', { shader: 'flat', src: vid });
+        log('sceneLoaded');
+      });
+      scene.addEventListener('renderstart', function () { log('renderstart'); });
+      scene.addEventListener('arReady', function () { log('arReady'); });
+      scene.addEventListener('arError', function () { log('arError'); });
+      // Harness: headless Chrome blocks MindAR's unmuted autoplay; force-mute and play.
+      var fixer = setInterval(function () {
+        var sys = scene.systems['mindar-image-system'];
+        if (sys && sys.video) {
+          if (!sys.video.muted) sys.video.muted = true;
+          if (sys.video.paused) sys.video.play().catch(function () {});
+        }
+      }, 500);
+      // Record tracking-state transitions for diagnosis.
+      var lastSnap = '';
+      setInterval(function () {
+        var sys = scene.systems['mindar-image-system'];
+        if (!sys || !sys.controller || !sys.controller.trackingStates) return;
+        var s = sys.controller.trackingStates[0];
+        var snap = s.isTracking + ',' + s.trackCount + ',' + s.trackMiss + ',' + s.showing;
+        if (snap !== lastSnap) {
+          lastSnap = snap;
+          window.__t.transitions.push(snap + '@' + Math.round(performance.now() / 100) / 10);
+        }
+      }, 400);
+
+      target.addEventListener('targetFound', function () {
+        log('targetFound');
+        vid.play().catch(function () {});
+        setTimeout(function () {
+          var plane = document.getElementById('vidPlane');
+          var mesh = plane.getObject3D('mesh');
+          var sys = scene.systems['mindar-image-system'];
+          window.__t.state = {
+            vidReadyState: vid.readyState,
+            vidCurrentTime: Math.round(vid.currentTime * 100) / 100,
+            vidPaused: vid.paused,
+            vidDisplay: getComputedStyle(vid).display,
+            planeVisible: !!(mesh && mesh.visible && plane.object3D.visible),
+            hasTexture: !!(mesh && mesh.material && mesh.material.map),
+            textureIsVideo: !!(mesh && mesh.material && mesh.material.map && mesh.material.map.image === vid),
+            sysVideoSize: (sys && sys.video) ? (sys.video.videoWidth + 'x' + sys.video.videoHeight) : 'n/a'
+          };
+          log('state:' + JSON.stringify(window.__t.state));
+        }, 1500);
+      });
+      target.addEventListener('targetLost', function () { log('targetLost'); });
+    })();
+  </script>
+</body>
+</html>
